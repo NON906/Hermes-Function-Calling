@@ -20,6 +20,8 @@ from utils import (
     validate_and_extract_tool_calls
 )
 
+from langchain_core.utils.function_calling import convert_to_openai_tool
+
 class ModelInference:
     def __init__(self, model_path, chat_template, load_in_4bit):
         inference_logger.info(print_nous_text_art())
@@ -99,12 +101,12 @@ class ModelInference:
         completion = self.tokenizer.decode(tokens[0], skip_special_tokens=False, clean_up_tokenization_space=True)
         return completion
 
-    def generate_function_call(self, query, chat_template, num_fewshot, max_depth=5):
+    def generate_function_call(self, query, chat_template, num_fewshot, langchain_tools, max_depth=5):
         try:
             depth = 0
             user_message = f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
             chat = [{"role": "user", "content": user_message}]
-            tools = functions.get_openai_tools()
+            tools = [convert_to_openai_tool(f) for f in langchain_tools]
             prompt = self.prompter.generate_prompt(chat, tools, num_fewshot)
             completion = self.run_inference(prompt)
 
@@ -178,4 +180,4 @@ if __name__ == "__main__":
         inference = ModelInference(model_path, args.chat_template, args.load_in_4bit)
         
     # Run the model evaluator
-    inference.generate_function_call(args.query, args.chat_template, args.num_fewshot, args.max_depth)
+    inference.generate_function_call(args.query, args.chat_template, args.num_fewshot, [], args.max_depth)
