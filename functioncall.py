@@ -20,8 +20,6 @@ from utils import (
     validate_and_extract_tool_calls
 )
 
-from langchain_core.utils.function_calling import convert_to_openai_tool
-
 class ModelInference:
     def __init__(self, model_path, chat_template, load_in_4bit):
         inference_logger.info(print_nous_text_art())
@@ -101,12 +99,13 @@ class ModelInference:
         completion = self.tokenizer.decode(tokens[0], skip_special_tokens=False, clean_up_tokenization_space=True)
         return completion
 
-    def generate_function_call(self, query, chat_template, num_fewshot, langchain_tools, max_depth=5):
+    def generate_function_call(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[]):
         try:
             depth = 0
-            user_message = f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
-            chat = [{"role": "user", "content": user_message}]
-            tools = [convert_to_openai_tool(f) for f in langchain_tools]
+            user_message = query #f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
+            chat = history + [{"role": "user", "content": user_message}]
+            if tools is None:
+                tools = functions.get_openai_tools()
             prompt = self.prompter.generate_prompt(chat, tools, num_fewshot)
             completion = self.run_inference(prompt)
 
@@ -137,10 +136,10 @@ class ModelInference:
                     depth += 1
                     if depth >= max_depth:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                        return
+                        return None
 
                     completion = self.run_inference(prompt)
-                    recursive_loop(prompt, completion, depth)
+                    return recursive_loop(prompt, completion, depth)
                 elif error_message:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
                     tool_message += f"<tool_response>\nThere was an error parsing function calls\n Here's the error stack trace: {error_message}\nPlease call the function again with correct syntax<tool_response>"
@@ -149,14 +148,15 @@ class ModelInference:
                     depth += 1
                     if depth >= max_depth:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                        return
+                        return None
 
                     completion = self.run_inference(prompt)
-                    recursive_loop(prompt, completion, depth)
+                    return recursive_loop(prompt, completion, depth)
                 else:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
+                    return assistant_message
 
-            recursive_loop(prompt, completion, depth)
+            return recursive_loop(prompt, completion, depth)
 
         except Exception as e:
             inference_logger.error(f"Exception occurred: {e}")
@@ -180,4 +180,4 @@ if __name__ == "__main__":
         inference = ModelInference(model_path, args.chat_template, args.load_in_4bit)
         
     # Run the model evaluator
-    inference.generate_function_call(args.query, args.chat_template, args.num_fewshot, [], args.max_depth)
+    inference.generate_function_call(args.query, args.chat_template, args.num_fewshot, args.max_depth)
