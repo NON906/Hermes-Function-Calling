@@ -73,13 +73,20 @@ class ModelInference:
             inference_logger.warning("Assistant message is None")
             raise ValueError("Assistant message is None")
         
-    def execute_function_call(self, tool_call):
+    async def execute_function_call(self, tool_call, langchain_tools):
         function_name = tool_call.get("name")
-        function_to_call = getattr(functions, function_name, None)
         function_args = tool_call.get("arguments", {})
+        if langchain_tools is None:
+            function_to_call = getattr(functions, function_name, None)
+            inference_logger.info(f"Invoking function call {function_name} ...")
+            function_response = function_to_call(*function_args.values())
+        else:
+            for loop_tool in langchain_tools:
+                if loop_tool.name == function_name:
+                    function_to_call = loop_tool
+            inference_logger.info(f"Invoking function call {function_name} ...")
+            function_response = await function_to_call.ainvoke(function_args)
 
-        inference_logger.info(f"Invoking function call {function_name} ...")
-        function_response = function_to_call(*function_args.values())
         results_dict = f'{{"name": "{function_name}", "content": {function_response}}}'
         return results_dict
     
@@ -110,8 +117,10 @@ class ModelInference:
             user_message = query #f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
             chat = history + [{"role": "user", "content": user_message}]
             if tools is None:
+                langchain_tools = None
                 tools = functions.get_openai_tools()
             else:
+                langchain_tools = tools
                 tools = [convert_to_openai_tool(f) for f in tools]
             prompt = self.prompter.generate_prompt(chat, tools, num_fewshot)
             input_prompt_count = len(prompt)
@@ -130,7 +139,7 @@ class ModelInference:
                         validation, message = validate_function_call_schema(tool_call, tools)
                         if validation:
                             try:
-                                function_response = self.execute_function_call(tool_call)
+                                function_response = await self.execute_function_call(tool_call, langchain_tools)
                                 tool_message += f"<tool_response>\n{function_response}\n</tool_response>\n"
                                 inference_logger.info(f"Here's the response from the function call: {tool_call.get('name')}\n{function_response}")
                             except Exception as e:
@@ -167,7 +176,11 @@ class ModelInference:
                 else:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
                     if finish_tool_name is not None:
-                        prompt.append({"role": "user", "content": f"Please execute \"{finish_tool_name}\" function with this contents."})
+                        depth += 1
+                        if depth >= max_depth:
+                            print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
+                            return None
+                        prompt.append({"role": "user", "content": f"Please execute \"{finish_tool_name}\" tool with this contents."})
                         completion = await self.run_inference(prompt, finish_tool_name)
                         return await recursive_loop(prompt, completion, depth)
                     return prompt[input_prompt_count:] #assistant_message
