@@ -81,7 +81,7 @@ class ModelInference:
         results_dict = f'{{"name": "{function_name}", "content": {function_response}}}'
         return results_dict
     
-    def run_inference(self, prompt):
+    async def run_inference(self, prompt):
         inputs = self.tokenizer.apply_chat_template(
             prompt,
             add_generation_prompt=True,
@@ -100,6 +100,9 @@ class ModelInference:
         return completion
 
     def generate_function_call(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[]):
+        asyncio.run(self.generate_function_call_async(query, chat_template, num_fewshot, max_depth, tools, history))
+
+    async def generate_function_call_async(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[]):
         try:
             depth = 0
             user_message = query #f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
@@ -107,7 +110,7 @@ class ModelInference:
             if tools is None:
                 tools = functions.get_openai_tools()
             prompt = self.prompter.generate_prompt(chat, tools, num_fewshot)
-            completion = self.run_inference(prompt)
+            completion = await self.run_inference(prompt)
 
             def recursive_loop(prompt, completion, depth):
                 nonlocal max_depth
@@ -138,7 +141,7 @@ class ModelInference:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
                         return None
 
-                    completion = self.run_inference(prompt)
+                    completion = await self.run_inference(prompt)
                     return recursive_loop(prompt, completion, depth)
                 elif error_message:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
@@ -150,11 +153,11 @@ class ModelInference:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
                         return None
 
-                    completion = self.run_inference(prompt)
+                    completion = await self.run_inference(prompt)
                     return recursive_loop(prompt, completion, depth)
                 else:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
-                    return assistant_message
+                    return prompt #assistant_message
 
             return recursive_loop(prompt, completion, depth)
 

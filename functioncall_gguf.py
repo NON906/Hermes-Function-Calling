@@ -79,7 +79,7 @@ class ModelInferenceGguf(ModelInference):
 
         self.chain = prompt | llm
 
-    def run_inference(self, prompt):
+    async def run_inference(self, prompt):
         history = ChatMessageHistory()
         for mes in prompt:
             if mes['role'] == 'user':
@@ -92,7 +92,7 @@ class ModelInferenceGguf(ModelInference):
                 history.add_message(ToolMessage(mes['content'], tool_call_id=''))
 
         recieved_message = '<|im_start|>assistant\n'
-        response = self.chain.invoke({
+        response = await self.chain.ainvoke({
             'history': history.messages,
         })
         recieved_message += response
