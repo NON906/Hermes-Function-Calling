@@ -20,6 +20,8 @@ from utils import (
     validate_and_extract_tool_calls
 )
 
+from langchain_core.utils.function_calling import convert_to_openai_tool
+
 class ModelInference:
     def __init__(self, model_path, chat_template, load_in_4bit):
         inference_logger.info(print_nous_text_art())
@@ -102,17 +104,20 @@ class ModelInference:
     def generate_function_call(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[]):
         asyncio.run(self.generate_function_call_async(query, chat_template, num_fewshot, max_depth, tools, history))
 
-    async def generate_function_call_async(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[]):
+    async def generate_function_call_async(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[], finish_tool_name=None):
         try:
             depth = 0
             user_message = query #f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
             chat = history + [{"role": "user", "content": user_message}]
             if tools is None:
                 tools = functions.get_openai_tools()
+            else:
+                tools = [convert_to_openai_tool(f) for f in tools]
             prompt = self.prompter.generate_prompt(chat, tools, num_fewshot)
-            completion = await self.run_inference(prompt)
+            input_prompt_count = len(prompt)
+            completion = await self.run_inference(prompt, finish_tool_name)
 
-            def recursive_loop(prompt, completion, depth):
+            async def recursive_loop(prompt, completion, depth):
                 nonlocal max_depth
                 tool_calls, assistant_message, error_message = self.process_completion_and_validate(completion, chat_template)
                 prompt.append({"role": "assistant", "content": assistant_message})
@@ -136,13 +141,17 @@ class ModelInference:
                             tool_message += f"<tool_response>\nThere was an error validating function call against function signature: {tool_call.get('name')}\nHere's the error traceback: {message}\nPlease call this function again with correct arguments within XML tags <tool_call></tool_call>\n</tool_response>\n"
                     prompt.append({"role": "tool", "content": tool_message})
 
+                    for tool_call in tool_calls:
+                        if finish_tool_name == tool_call.get("name"):
+                            return prompt[input_prompt_count:]
+
                     depth += 1
                     if depth >= max_depth:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
                         return None
 
-                    completion = await self.run_inference(prompt)
-                    return recursive_loop(prompt, completion, depth)
+                    completion = await self.run_inference(prompt, finish_tool_name)
+                    return await recursive_loop(prompt, completion, depth)
                 elif error_message:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
                     tool_message += f"<tool_response>\nThere was an error parsing function calls\n Here's the error stack trace: {error_message}\nPlease call the function again with correct syntax<tool_response>"
@@ -153,13 +162,17 @@ class ModelInference:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
                         return None
 
-                    completion = await self.run_inference(prompt)
-                    return recursive_loop(prompt, completion, depth)
+                    completion = await self.run_inference(prompt, finish_tool_name)
+                    return await recursive_loop(prompt, completion, depth)
                 else:
                     inference_logger.info(f"Assistant Message:\n{assistant_message}")
-                    return prompt #assistant_message
+                    if finish_tool_name is not None:
+                        prompt.append({"role": "user", "content": f"Please execute \"{finish_tool_name}\" function with this contents."})
+                        completion = await self.run_inference(prompt, finish_tool_name)
+                        return await recursive_loop(prompt, completion, depth)
+                    return prompt[input_prompt_count:] #assistant_message
 
-            return recursive_loop(prompt, completion, depth)
+            return await recursive_loop(prompt, completion, depth)
 
         except Exception as e:
             inference_logger.error(f"Exception occurred: {e}")

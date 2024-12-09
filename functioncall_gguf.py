@@ -16,6 +16,8 @@ from langchain_core.messages.tool import ToolMessage
 from langchain_community.llms import LlamaCpp
 from langchain_community.chat_message_histories import ChatMessageHistory
 
+from gpt_stream_parser import force_parse_json
+
 from functioncall import ModelInference
 from prompter import PromptManager
 from utils import (
@@ -46,11 +48,12 @@ class TemplateMessagesPrompt(StringPromptTemplate):
                     messages += 'tool'
                 messages += '\n' + mes.content + '<|im_end|>\n'
         messages += '<|im_start|>assistant\n'
-        print(messages, file=sys.stderr)
         return messages
 
 
 class ModelInferenceGguf(ModelInference):
+    streaming_args = {}
+
     def __init__(self, model_path, file_name, n_gpu_layers, n_batch, n_ctx):
         self.prompter = PromptManager()
 
@@ -79,7 +82,7 @@ class ModelInferenceGguf(ModelInference):
 
         self.chain = prompt | llm
 
-    async def run_inference(self, prompt):
+    async def run_inference(self, prompt, finish_tool_name):
         history = ChatMessageHistory()
         for mes in prompt:
             if mes['role'] == 'user':
@@ -92,11 +95,21 @@ class ModelInferenceGguf(ModelInference):
                 history.add_message(ToolMessage(mes['content'], tool_call_id=''))
 
         recieved_message = '<|im_start|>assistant\n'
-        response = await self.chain.ainvoke({
-            'history': history.messages,
-        })
-        recieved_message += response
-        print(response, file=sys.stderr)
+        self.streaming_args = {}
+        async for chunk in self.chain.astream({"history": history.messages}):
+            recieved_message += chunk
+            if '<tool_call>' in recieved_message:
+                check_message = recieved_message.split('<tool_call>', 1)[1].replace('”', '"').replace("´", "'")
+                if '{' in check_message:
+                    check_message = '{' + check_message.split('{', 1)[1]
+                    rsplit_size = check_message.count('}') - check_message.count('{') + 1
+                    if rsplit_size > 0:
+                        check_message = check_message.rsplit('}', rsplit_size)[0] + '}'
+                    check_dict = force_parse_json(check_message)
+                    if check_dict is not None and 'name' in check_dict and check_dict['name'] == finish_tool_name and 'arguments' in check_dict:
+                        self.streaming_args = check_dict['arguments']
+                    if check_message.count('{') <= check_message.count('}'):
+                        break
         if recieved_message.count('<tool_call>') > recieved_message.count('</tool_call>'):
             recieved_message += '</tool_call>'
         recieved_message += '<|im_end|>'
@@ -118,6 +131,9 @@ class ModelInferenceGguf(ModelInference):
         else:
             inference_logger.warning("Assistant message is None")
             raise ValueError("Assistant message is None")
+
+    def get_streaming_args(self):
+        return self.streaming_args
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run recursive function calling loop")
