@@ -47,7 +47,9 @@ class TemplateMessagesPrompt(StringPromptTemplate):
                 else:
                     messages += 'tool'
                 messages += '\n' + mes.content + '<|im_end|>\n'
-        if (type(input_mes_list[-1]) is tuple and input_mes_list[-1][0] != 'assistant') or not (type(input_mes_list[-1]) is AIMessage):
+        if type(input_mes_list[-1]) is tuple and input_mes_list[-1][0] == 'assistant' or type(input_mes_list[-1]) is AIMessage:
+            messages = messages[:-len('<|im_end|>\n')]
+        else:
             messages += '<|im_start|>assistant\n'
         return messages
 
@@ -99,6 +101,9 @@ class ModelInferenceGguf(ModelInference):
         recieved_message = '<|im_start|>assistant\n'
         self.streaming_args = {}
         self.streaming_message = ''
+        if prompt[-1]['role'] == 'assistant':
+            recieved_message += prompt[-1]['content']
+            self.streaming_message = prompt[-1]['content']
         async for chunk in self.chain.astream({"history": history.messages}):
             recieved_message += chunk
             if '<tool_call>' in recieved_message:
@@ -115,6 +120,8 @@ class ModelInferenceGguf(ModelInference):
                         break
             else:
                 self.streaming_message += chunk
+            if self.is_abort:
+                break
         if recieved_message.count('<tool_call>') > recieved_message.count('</tool_call>'):
             recieved_message += '</tool_call>'
         recieved_message += '<|im_end|>'

@@ -113,9 +113,13 @@ class ModelInference:
 
     async def generate_function_call_async(self, query, chat_template, num_fewshot, max_depth=5, tools=None, history=[], finish_tool_name=None):
         try:
+            self.is_abort = False
             depth = 0
-            user_message = query #f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
-            chat = history + [{"role": "user", "content": user_message}]
+            if query is not None:
+                user_message = query #f"{query}\nThis is the first turn and you don't have <tool_results> to analyze yet"
+                chat = history + [{"role": "user", "content": user_message}]
+            else:
+                chat = history
             if tools is None:
                 langchain_tools = None
                 tools = functions.get_openai_tools()
@@ -128,8 +132,12 @@ class ModelInference:
 
             async def recursive_loop(prompt, completion, depth):
                 nonlocal max_depth
+
                 tool_calls, assistant_message, error_message = self.process_completion_and_validate(completion, chat_template)
                 prompt.append({"role": "assistant", "content": assistant_message})
+
+                if self.is_abort:
+                    return prompt[input_prompt_count:] #None
 
                 tool_message = f"Agent iteration {depth} to assist with user query: {query}\n"
                 if tool_calls:
@@ -157,7 +165,7 @@ class ModelInference:
                     depth += 1
                     if depth >= max_depth:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                        return None
+                        return prompt[input_prompt_count:] #None
 
                     completion = await self.run_inference(prompt, finish_tool_name)
                     return await recursive_loop(prompt, completion, depth)
@@ -169,7 +177,7 @@ class ModelInference:
                     depth += 1
                     if depth >= max_depth:
                         print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                        return None
+                        return prompt[input_prompt_count:] #None
 
                     completion = await self.run_inference(prompt, finish_tool_name)
                     return await recursive_loop(prompt, completion, depth)
@@ -179,17 +187,23 @@ class ModelInference:
                         depth += 1
                         if depth >= max_depth:
                             print(f"Maximum recursion depth reached ({max_depth}). Stopping recursion.")
-                            return None
+                            return prompt[input_prompt_count:] #None
                         prompt.append({"role": "user", "content": f"Please execute \"{finish_tool_name}\" tool with this contents."})
                         completion = await self.run_inference(prompt, finish_tool_name)
                         return await recursive_loop(prompt, completion, depth)
                     return prompt[input_prompt_count:] #assistant_message
 
-            return await recursive_loop(prompt, completion, depth)
+            ret = await recursive_loop(prompt, completion, depth)
+            self.is_abort = False
+            return ret
 
         except Exception as e:
             inference_logger.error(f"Exception occurred: {e}")
+            self.is_abort = False
             raise e
+
+    def abort(self):
+        self.is_abort = True
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run recursive function calling loop")

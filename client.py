@@ -114,14 +114,26 @@ def main_ui():
             llama_cpp_n_ctx,
             txt_json_settings, btn_settings_save]
 
-        async def chat_generate(chat_history):
-            nonlocal llm_inference, full_history
+        async def chat_init():
+            nonlocal llm_inference
             is_reset = await mcp_manager.load_json()
             if llm_inference is None or is_reset:
                 if not 'llama_cpp_model_repo_name' in chat_settings and not 'llama_cpp_model_file' in chat_settings:
                     chat_settings['llama_cpp_model_repo_name'] = 'NousResearch/Hermes-3-Llama-3.1-8B-GGUF'
                     chat_settings['llama_cpp_model_file'] = 'Hermes-3-Llama-3.1-8B.Q6_K.gguf'
                 llm_inference = ModelInferenceGguf(chat_settings['llama_cpp_model_repo_name'], chat_settings['llama_cpp_model_file'], chat_settings['llama_cpp_n_gpu_layers'], chat_settings['llama_cpp_n_batch'], chat_settings['llama_cpp_n_ctx'])
+
+        async def chat_clear():
+            nonlocal full_history
+            full_history = []
+            return gr.update(interactive=False)
+
+        chatbot.clear(fn=chat_clear, outputs=btn_continue)
+
+        async def chat_generate(chat_history):
+            nonlocal llm_inference, full_history
+
+            await chat_init()
 
             gen_task = asyncio.create_task(llm_inference.generate_function_call_async(chat_history[-1][0], "chatml", None, 5, mcp_manager.mcp_tools, full_history))
 
@@ -166,6 +178,57 @@ def main_ui():
                 fn=lambda: [gr.update(interactive=True) for _ in set_interactive_items],
                 outputs=set_interactive_items,
             )
+
+        async def chat_continue(chat_history):
+            nonlocal llm_inference, full_history
+
+            await chat_init()
+
+            gen_task = asyncio.create_task(llm_inference.generate_function_call_async(None, "chatml", None, 5, mcp_manager.mcp_tools, full_history))
+
+            while not gen_task.done():
+                if llm_inference.get_streaming_message() != chat_history[-1][1]:
+                    chat_history[-1][1] = llm_inference.get_streaming_message()
+                    yield chat_history
+                await asyncio.sleep(0.01)
+
+            result = await gen_task
+
+            full_history += result
+
+            chat_history[-1][1] = llm_inference.get_streaming_message()
+            yield chat_history
+
+        btn_continue.click(
+                fn=lambda: [gr.update(interactive=False) for _ in set_interactive_items],
+                outputs=set_interactive_items,
+            ).then(
+                fn=lambda: gr.update(interactive=False),
+                outputs=btn_continue,
+            ).then(
+                fn=lambda: gr.update(interactive=True),
+                outputs=btn_abort,
+            ).then(
+                fn=chat_continue,
+                inputs=chatbot,
+                outputs=chatbot,
+            ).then(
+                fn=lambda: gr.update(interactive=False),
+                outputs=btn_abort,
+            ).then(
+                fn=lambda: gr.update(interactive=True),
+                outputs=btn_continue,
+            ).then(
+                fn=lambda: [gr.update(interactive=True) for _ in set_interactive_items],
+                outputs=set_interactive_items,
+            )
+
+        def chatgpt_abort():
+            nonlocal llm_inference
+            llm_inference.abort()
+
+        btn_abort.click(fn=chatgpt_abort,
+            queue=False)
 
         def on_load():
             lines = mcp_params_json.count('\n') + 2
