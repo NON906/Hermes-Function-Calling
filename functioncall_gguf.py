@@ -47,12 +47,14 @@ class TemplateMessagesPrompt(StringPromptTemplate):
                 else:
                     messages += 'tool'
                 messages += '\n' + mes.content + '<|im_end|>\n'
-        messages += '<|im_start|>assistant\n'
+        if (type(input_mes_list[-1]) is tuple and input_mes_list[-1][0] != 'assistant') or not (type(input_mes_list[-1]) is AIMessage):
+            messages += '<|im_start|>assistant\n'
         return messages
 
 
 class ModelInferenceGguf(ModelInference):
     streaming_args = {}
+    streaming_message = ''
 
     def __init__(self, model_path, file_name, n_gpu_layers, n_batch, n_ctx):
         self.prompter = PromptManager()
@@ -82,7 +84,7 @@ class ModelInferenceGguf(ModelInference):
 
         self.chain = prompt | llm
 
-    async def run_inference(self, prompt, finish_tool_name):
+    async def run_inference(self, prompt, finish_tool_name=None):
         history = ChatMessageHistory()
         for mes in prompt:
             if mes['role'] == 'user':
@@ -96,6 +98,7 @@ class ModelInferenceGguf(ModelInference):
 
         recieved_message = '<|im_start|>assistant\n'
         self.streaming_args = {}
+        self.streaming_message = ''
         async for chunk in self.chain.astream({"history": history.messages}):
             recieved_message += chunk
             if '<tool_call>' in recieved_message:
@@ -106,10 +109,12 @@ class ModelInferenceGguf(ModelInference):
                     if rsplit_size > 0:
                         check_message = check_message.rsplit('}', rsplit_size)[0] + '}'
                     check_dict = force_parse_json(check_message)
-                    if check_dict is not None and 'name' in check_dict and check_dict['name'] == finish_tool_name and 'arguments' in check_dict:
+                    if check_dict is not None and 'name' in check_dict and finish_tool_name is not None and check_dict['name'] == finish_tool_name and 'arguments' in check_dict:
                         self.streaming_args = check_dict['arguments']
                     if check_message.count('{') <= check_message.count('}'):
                         break
+            else:
+                self.streaming_message += chunk
         if recieved_message.count('<tool_call>') > recieved_message.count('</tool_call>'):
             recieved_message += '</tool_call>'
         recieved_message += '<|im_end|>'
@@ -134,6 +139,9 @@ class ModelInferenceGguf(ModelInference):
 
     def get_streaming_args(self):
         return self.streaming_args
+
+    def get_streaming_message(self):
+        return self.streaming_message
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Run recursive function calling loop")

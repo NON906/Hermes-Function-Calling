@@ -4,7 +4,11 @@
 import os
 import json
 import argparse
+import asyncio
 import gradio as gr
+
+from functioncall_gguf import ModelInferenceGguf
+from client_src.mcp_manager import McpManager
 
 def main_ui():
     global mcp_params_json, mcp_params_base
@@ -24,6 +28,10 @@ def main_ui():
     else:
         mcp_params_json = r'{}'
     mcp_params_base = json.loads(mcp_params_json)
+
+    mcp_manager = McpManager()
+    llm_inference = None
+    full_history = []
 
     with gr.Blocks(analytics_enabled=False) as runner_interface:
         with gr.Row():
@@ -49,7 +57,10 @@ def main_ui():
         with gr.Row():
             gr.Markdown(value='## Settings')
         with gr.Row():
-            llama_cpp_model_file = gr.Textbox(label='Model File Path (*.gguf)')
+            with gr.Column():
+                llama_cpp_repo_name = gr.Textbox(label='Repository Name on Hugging Face')
+            with gr.Column():
+                llama_cpp_file = gr.Textbox(label='Model File Path (*.gguf)')
         with gr.Row():
             with gr.Column():
                 llama_cpp_n_gpu_layers = gr.Number(label='n_gpu_layers')
@@ -62,10 +73,12 @@ def main_ui():
             #    llama_cpp_system_message_language = gr.Dropdown(value='English', allow_custom_value=False, label='System Message Language', choices=['English', 'Japanese'])
             with gr.Column():
                 btn_llama_cpp_save = gr.Button(value='Save And Reflect', variant='primary')
-        def llama_cpp_save(path: str, n_gpu_layers: int, n_batch: int, n_ctx: int,
+        def llama_cpp_save(repo_name: str, file: str, n_gpu_layers: int, n_batch: int, n_ctx: int,
             #system_message_language: str
         ):
-            chat_settings['llama_cpp_model'] = path
+            nonlocal llm_inference
+            chat_settings['llama_cpp_model_repo_name'] = repo_name
+            chat_settings['llama_cpp_model_file'] = file
             chat_settings['llama_cpp_n_gpu_layers'] = n_gpu_layers
             chat_settings['llama_cpp_n_batch'] = n_batch
             chat_settings['llama_cpp_n_ctx'] = n_ctx
@@ -73,33 +86,86 @@ def main_ui():
             os.makedirs('settings', exist_ok=True)
             with open('settings/chat_settings.json', 'w') as f:
                 json.dump(chat_settings, f)
-            #chat_gpt_api.load_settings(**chat_settings)
-        btn_llama_cpp_save.click(fn=llama_cpp_save, inputs=[llama_cpp_model_file, llama_cpp_n_gpu_layers, llama_cpp_n_batch, llama_cpp_n_ctx,
+            llm_inference = None
+        btn_llama_cpp_save.click(fn=llama_cpp_save, inputs=[llama_cpp_repo_name, llama_cpp_file, llama_cpp_n_gpu_layers, llama_cpp_n_batch, llama_cpp_n_ctx,
             #llama_cpp_system_message_language
         ])
         with gr.Row():
             txt_json_settings = gr.Textbox(value='', label='MCP Servers')
         with gr.Row():
             with gr.Column():
-                btn_settings_save = gr.Button(value='Save', variant='primary')
+                btn_settings_save = gr.Button(value='Save And Reflect', variant='primary')
                 def json_save(settings: str):
                     os.makedirs('settings', exist_ok=True)
                     with open('settings/mcp_config.json', 'w') as f:
                         f.write(settings)
                 btn_settings_save.click(fn=json_save, inputs=txt_json_settings)
-            with gr.Column():
-                btn_settings_reflect = gr.Button(value='Reflect settings', variant='primary')
-                def json_reflect(settings: str):    
-                    global mcp_params_json, mcp_params_base
-                    mcp_params_json = settings
-                    mcp_params_base = json.loads(mcp_params_json)
-                btn_settings_reflect.click(fn=json_reflect, inputs=txt_json_settings)
+            #with gr.Column():
+            #    btn_settings_reflect = gr.Button(value='Reflect settings', variant='primary')
+            #    def json_reflect(settings: str):    
+            #        global mcp_params_json, mcp_params_base
+            #        mcp_params_json = settings
+            #        mcp_params_base = json.loads(mcp_params_json)
+            #    btn_settings_reflect.click(fn=json_reflect, inputs=txt_json_settings)
         
         set_interactive_items = [text_input, btn_generate, btn_regenerate,
             btn_remove_last, btn_clear, btn_load, btn_save,
-            llama_cpp_model_file, llama_cpp_n_gpu_layers, llama_cpp_n_batch, btn_llama_cpp_save,
+            llama_cpp_repo_name, llama_cpp_file, llama_cpp_n_gpu_layers, llama_cpp_n_batch, btn_llama_cpp_save,
             llama_cpp_n_ctx,
-            txt_json_settings, btn_settings_save, btn_settings_reflect]
+            txt_json_settings, btn_settings_save]
+
+        async def chat_generate(chat_history):
+            nonlocal llm_inference, full_history
+            is_reset = await mcp_manager.load_json()
+            if llm_inference is None or is_reset:
+                if not 'llama_cpp_model_repo_name' in chat_settings and not 'llama_cpp_model_file' in chat_settings:
+                    chat_settings['llama_cpp_model_repo_name'] = 'NousResearch/Hermes-3-Llama-3.1-8B-GGUF'
+                    chat_settings['llama_cpp_model_file'] = 'Hermes-3-Llama-3.1-8B.Q6_K.gguf'
+                llm_inference = ModelInferenceGguf(chat_settings['llama_cpp_model_repo_name'], chat_settings['llama_cpp_model_file'], chat_settings['llama_cpp_n_gpu_layers'], chat_settings['llama_cpp_n_batch'], chat_settings['llama_cpp_n_ctx'])
+
+            gen_task = asyncio.create_task(llm_inference.generate_function_call_async(chat_history[-1][0], "chatml", None, 5, mcp_manager.mcp_tools, full_history))
+
+            while not gen_task.done():
+                if llm_inference.get_streaming_message() != chat_history[-1][1]:
+                    chat_history[-1][1] = llm_inference.get_streaming_message()
+                    yield chat_history
+                await asyncio.sleep(0.01)
+
+            result = await gen_task
+
+            full_history += [{'role': 'user', 'content': chat_history[-1][0]}, ] + result
+
+            chat_history[-1][1] = llm_inference.get_streaming_message()
+            yield chat_history
+
+        btn_generate.click(
+                fn=lambda: [gr.update(interactive=False) for _ in set_interactive_items],
+                outputs=set_interactive_items,
+            ).then(
+                fn=lambda: gr.update(interactive=False),
+                outputs=btn_continue,
+            ).then(
+                fn=lambda t, c: ['', c + [(t, None)] if c is not None else [(t, None)]],
+                inputs=[text_input, chatbot],
+                outputs=[text_input, chatbot],
+                queue=False,
+            ).then(
+                fn=lambda: gr.update(interactive=True),
+                outputs=btn_abort,
+            ).then(
+                fn=chat_generate,
+                inputs=chatbot,
+                outputs=chatbot,
+            ).then(
+                fn=lambda: gr.update(interactive=False),
+                outputs=btn_abort,
+            ).then(
+                fn=lambda: gr.update(interactive=True),
+                outputs=btn_continue,
+            ).then(
+                fn=lambda: [gr.update(interactive=True) for _ in set_interactive_items],
+                outputs=set_interactive_items,
+            )
 
         def on_load():
             lines = mcp_params_json.count('\n') + 2
@@ -116,7 +182,7 @@ def main_ui():
 
             ret = [json_settings, chat_settings['llama_cpp_n_gpu_layers'], chat_settings['llama_cpp_n_batch'], chat_settings['llama_cpp_n_ctx']]
 
-            for key in ['llama_cpp_model', 
+            for key in ['llama_cpp_model_repo_name', 'llama_cpp_model_file', 
                 #'llama_cpp_system_message_language'
             ]:
                 if key in chat_settings:
@@ -129,7 +195,7 @@ def main_ui():
         runner_interface.load(on_load, outputs=[
             txt_json_settings,
             llama_cpp_n_gpu_layers, llama_cpp_n_batch, llama_cpp_n_ctx,
-            llama_cpp_model_file, 
+            llama_cpp_repo_name, llama_cpp_file, 
             #llama_cpp_system_message_language,
         ])
 
