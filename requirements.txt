@@ -18,3 +18,5 @@ langchain-community
 langgraph
 langchain-mcp
 gradio
+nodejs-bin[cmd]
+uv
