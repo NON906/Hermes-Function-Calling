@@ -73,7 +73,7 @@ class ModelInferenceGguf(ModelInference):
             stop=['<|im_end|>', '</tool_call>'],
             max_tokens=1500,
             temperature=0.8,
-            repetition_penalty=1.1,
+            #repetition_penalty=1.1,
         )
 
         prompt = TemplateMessagesPrompt(
